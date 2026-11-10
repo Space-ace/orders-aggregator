@@ -36,6 +36,25 @@ describe("POST /webhooks/order", () => {
     expect(res.statusCode).toBe(400);
   });
 
+  it("битый JSON и чужой Content-Type — 4xx, а не 500: на 5xx отправитель повторял бы заведомо плохой запрос", async () => {
+    const badJson = await ctx.app.inject({ method: "POST", url: "/webhooks/order", headers: { "content-type": "application/json" }, payload: "{oops" });
+    expect(badJson.statusCode).toBe(400);
+    expect(badJson.json()).toMatchObject({ error: "bad_request" });
+    const form = await ctx.app.inject({ method: "POST", url: "/webhooks/order", headers: { "content-type": "application/x-www-form-urlencoded" }, payload: "a=1" });
+    expect(form.statusCode).toBe(415);
+    expect(form.json()).toMatchObject({ error: "unsupported_media_type" });
+  });
+
+  it("сбой базы — 500, чтобы отправитель повторил доставку", async () => {
+    const app = appWithDbIntercept(ctx, async () => {
+      throw new Error("connection terminated");
+    });
+    const res = await postWebhook(app, apiOrder());
+    await app.close();
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toEqual({ error: "internal", message: "Internal error" });
+  });
+
   it("принимает форматы внешнего API: сумма строкой, дата без зоны, скидка строкой", async () => {
     const res = await postWebhook(ctx.app, apiOrder({ amount: "1851.00", createdAt: "2026-03-29T22:15:37", discountPercent: "38", amountPaid: 1147.62 }));
     expect(res.json()).toEqual({ result: "created" });
