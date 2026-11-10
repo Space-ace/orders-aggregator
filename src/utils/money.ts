@@ -13,10 +13,14 @@ export function parseRub(raw: unknown): number {
 
 /**
  * Рубли → копейки. Доли копейки отбрасываются: деньги клиенту не досчитываем.
- * Перед этим убираем погрешность float: 1147.62 * 100 = 114761.99999999999, а не 114762.
+ * Но целые копейки из-за погрешности float могут выйти чуть меньше целого: 1147.62 * 100 = 114761.99999999999.
+ * Погрешность умножения не больше Number.EPSILON от величины: что ближе к целому — это целые копейки,
+ * остальное — настоящие доли копейки, их отбрасываем.
  */
 export function toKop(rub: number): number {
-  return Math.floor(Math.round(rub * 100 * 1e6) / 1e6);
+  const kop = rub * 100;
+  const nearest = Math.round(kop);
+  return Math.abs(kop - nearest) <= Number.EPSILON * Math.max(1, Math.abs(kop)) ? nearest : Math.floor(kop);
 }
 
 /** Копейки → рубли для ответа API. */
