@@ -4,11 +4,16 @@ import type { Order, OrdersRepository } from "../repositories/orders.js";
 import { parseRub, toKop } from "../utils/money.js";
 import { parseUtc } from "../utils/time.js";
 
-/** Заказ в формате внешнего API (поля, которые нам нужны; остальные игнорируем). */
+/**
+ * Заказ в формате внешнего API (поля, которые нам нужны; остальные игнорируем).
+ * discountPercent не читаем: net берём из amountPaid, а discount = gross − net.
+ */
 const ExternalOrder = z.object({
   id: z.string().min(1),
   customerId: z.string().min(1),
   amount: z.union([z.number(), z.string()]),
+  /** Появилось в API недавно; у заказов в старом формате поля нет. */
+  amountPaid: z.union([z.number(), z.string()]).nullish(),
   status: z.enum(["pending", "paid", "refunded"]),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -24,10 +29,13 @@ export class OrdersService {
     if (!parsed.success) throw new ValidationError(`invalid order: ${parsed.error.issues.map((i) => i.path.join(".")).join(", ")}`);
     const o = parsed.data;
     try {
+      const amountKop = toKop(parseRub(o.amount));
       return {
         id: o.id,
         customerId: o.customerId,
-        amountKop: toKop(parseRub(o.amount)),
+        amountKop,
+        // Старый формат, без скидок: оплачена вся сумма
+        amountPaidKop: o.amountPaid == null ? amountKop : toKop(parseRub(o.amountPaid)),
         status: o.status,
         createdAt: parseUtc(o.createdAt),
         updatedAt: parseUtc(o.updatedAt),
