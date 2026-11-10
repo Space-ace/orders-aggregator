@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { apiOrder, setupTestApp } from "./helpers.js";
+import { apiOrder, appWithDbIntercept, setupTestApp } from "./helpers.js";
 
 const ctx = setupTestApp();
 
@@ -32,6 +32,32 @@ describe("POST /sync", () => {
     expect(res.json()).toMatchObject({ stale: 1 });
     const { rows } = await ctx.db.query(`SELECT status FROM orders WHERE id = $1`, [fresh.id]);
     expect(rows[0].status).toBe("refunded");
+  });
+
+  it("сохраняет страницу одним запросом к базе, а не запросом на каждый заказ", async () => {
+    ctx.api.pages.set(null, { items: [apiOrder(), apiOrder(), apiOrder()], nextCursor: "p2" });
+    ctx.api.pages.set("p2", { items: [apiOrder(), apiOrder()], nextCursor: "p3" });
+    ctx.api.pages.set("p3", { items: [], nextCursor: "p3" });
+    let inserts = 0;
+    const app = appWithDbIntercept(ctx, (text, values, next) => {
+      if (text.trimStart().startsWith("INSERT INTO orders")) inserts++;
+      return next(text, values);
+    });
+    const res = await app.inject({ method: "POST", url: "/sync" });
+    await app.close();
+    expect(res.json()).toMatchObject({ pages: 3, received: 5, applied: 5 });
+    expect(inserts).toBe(2); // по запросу на непустую страницу
+  });
+
+  it("повторы заказа на одной странице: сохраняется самая свежая версия, синк не падает", async () => {
+    const o = apiOrder({ status: "pending", updatedAt: "2026-02-10T12:00:00Z" });
+    const items = [o, { ...o, status: "paid", updatedAt: "2026-02-10T13:00:00Z" }, { ...o, status: "refunded", updatedAt: "2026-02-10T11:00:00Z" }];
+    ctx.api.pages.set(null, { items, nextCursor: null });
+    const res = await ctx.app.inject({ method: "POST", url: "/sync" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ received: 3, applied: 1, stale: 2, invalid: 0 });
+    const { rows } = await ctx.db.query(`SELECT status FROM orders WHERE id = $1`, [o.id]);
+    expect(rows[0].status).toBe("paid");
   });
 
   it("строковые суммы и даты без зоны", async () => {

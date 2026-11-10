@@ -11,6 +11,9 @@ export interface Order {
   updatedAt: Date;
 }
 
+/** Итог сохранения версии заказа. */
+export type SaveResult = "created" | "updated" | "stale";
+
 interface Row {
   id: string;
   customer_id: string;
@@ -35,14 +38,23 @@ export class OrdersRepository {
   constructor(private readonly db: Db) {}
 
   /**
-   * Сохраняет версию заказа, только если она новее сохранённой (по updated_at).
-   * Сравнение и запись — один запрос: параллельные доставки разных версий одного заказа
-   * не могут перезаписать новую версию старой.
+   * Сохраняет версии заказов одним запросом, каждую — только если она новее сохранённой (по updated_at).
+   * Для каждой строки сравнение и запись атомарны: параллельные доставки разных версий одного заказа
+   * не перезаписывают новую версию старой. Итоги — по одному на каждую версию, в порядке входа.
    */
-  async saveIfNewer(o: Order): Promise<"created" | "updated" | "stale"> {
-    const { rows } = await this.db.query<{ inserted: boolean }>(
+  async saveIfNewer(orders: Order[]): Promise<SaveResult[]> {
+    if (orders.length === 0) return [];
+    // Один INSERT … ON CONFLICT не может обновить строку дважды, поэтому из повторов одного заказа
+    // пишем только самую свежую версию (при равном updatedAt — первую), остальные — stale
+    const newest = new Map<string, number>();
+    orders.forEach((o, i) => {
+      const kept = newest.get(o.id);
+      if (kept === undefined || orders[kept].updatedAt.getTime() < o.updatedAt.getTime()) newest.set(o.id, i);
+    });
+    const batch = [...newest.values()].map((i) => orders[i]);
+    const { rows } = await this.db.query<{ id: string; inserted: boolean }>(
       `INSERT INTO orders (id, customer_id, amount_kop, amount_paid_kop, status, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       SELECT * FROM unnest($1::text[], $2::text[], $3::bigint[], $4::bigint[], $5::text[], $6::timestamptz[], $7::timestamptz[])
        ON CONFLICT (id) DO UPDATE SET
          customer_id     = excluded.customer_id,
          amount_kop      = excluded.amount_kop,
@@ -51,11 +63,19 @@ export class OrdersRepository {
          created_at      = excluded.created_at,
          updated_at      = excluded.updated_at
        WHERE orders.updated_at < excluded.updated_at
-       RETURNING (xmax = 0) AS inserted`,
-      [o.id, o.customerId, o.amountKop, o.amountPaidKop, o.status, o.createdAt, o.updatedAt],
+       RETURNING id, (xmax = 0) AS inserted`,
+      [
+        batch.map((o) => o.id),
+        batch.map((o) => o.customerId),
+        batch.map((o) => o.amountKop),
+        batch.map((o) => o.amountPaidKop),
+        batch.map((o) => o.status),
+        batch.map((o) => o.createdAt),
+        batch.map((o) => o.updatedAt),
+      ],
     );
-    if (rows.length === 0) return "stale";
-    return rows[0].inserted ? "created" : "updated";
+    const saved = new Map(rows.map((r): [string, SaveResult] => [r.id, r.inserted ? "created" : "updated"]));
+    return orders.map((o, i) => (newest.get(o.id) === i ? (saved.get(o.id) ?? "stale") : "stale"));
   }
 
   /** Оплаченные заказы клиента, созданные в [from, to). */

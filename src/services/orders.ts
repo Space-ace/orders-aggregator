@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ValidationError } from "../errors.js";
-import type { Order, OrdersRepository } from "../repositories/orders.js";
+import type { Order, OrdersRepository, SaveResult } from "../repositories/orders.js";
 import { parseRub, toKop } from "../utils/money.js";
 import { parseUtc } from "../utils/time.js";
 
@@ -19,7 +19,13 @@ const ExternalOrder = z.object({
   updatedAt: z.string(),
 });
 
-export type ApplyResult = "created" | "updated" | "stale";
+export type ApplyResult = SaveResult;
+
+export interface ApplyStats {
+  applied: number;
+  stale: number;
+  invalid: number;
+}
 
 export class OrdersService {
   constructor(private readonly orders: OrdersRepository) {}
@@ -46,11 +52,31 @@ export class OrdersService {
   }
 
   /**
-   * Применяет версию заказа (из синка или вебхука).
+   * Применяет версию заказа из вебхука.
    * Вебхуки приходят с повторами, не по порядку и параллельно, поэтому версию сохраняем,
    * только если она новее уже сохранённой (по updatedAt), — атомарно, одним запросом.
    */
   async apply(raw: unknown): Promise<ApplyResult> {
-    return this.orders.saveIfNewer(this.normalize(raw));
+    const [result] = await this.orders.saveIfNewer([this.normalize(raw)]);
+    return result;
+  }
+
+  /**
+   * Применяет пачку версий (страницу синка) одним запросом к базе — с той же проверкой «только если новее».
+   * Невалидные заказы пропускает и считает.
+   */
+  async applyMany(raws: unknown[]): Promise<ApplyStats> {
+    const valid: Order[] = [];
+    let invalid = 0;
+    for (const raw of raws) {
+      try {
+        valid.push(this.normalize(raw));
+      } catch (e) {
+        if (!(e instanceof ValidationError)) throw e;
+        invalid++;
+      }
+    }
+    const stale = (await this.orders.saveIfNewer(valid)).filter((r) => r === "stale").length;
+    return { applied: valid.length - stale, stale, invalid };
   }
 }
