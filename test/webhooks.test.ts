@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { apiOrder, postWebhook, setupTestApp } from "./helpers.js";
+import { apiOrder, appWithDbIntercept, postWebhook, setupTestApp } from "./helpers.js";
 
 const ctx = setupTestApp();
 
@@ -52,5 +52,28 @@ describe("POST /webhooks/order", () => {
     expect(res.json()).toEqual({ result: "updated" });
     const { rows } = await ctx.db.query(`SELECT amount_paid_kop FROM orders WHERE id = $1`, [o.id]);
     expect(Number(rows[0].amount_paid_kop)).toBe(67000);
+  });
+
+  it("старая версия не перезаписывает новую, если та записана параллельной доставкой прямо перед ней", async () => {
+    // Внешняя система шлёт копии одного заказа пачками одновременно. Окно гонки воспроизводим
+    // детерминированно: прямо перед тем, как сервис запишет старую версию, «другая доставка»
+    // сохраняет новую. Неатомарное «прочитать → сравнить → записать» на этом падает каждый раз
+    const base = apiOrder({ status: "paid", updatedAt: "2026-02-10T12:00:00Z" });
+    await postWebhook(ctx.app, base);
+    let raced = false;
+    const app = appWithDbIntercept(ctx, async (text, values, next) => {
+      if (!raced && text.trimStart().startsWith("INSERT INTO orders")) {
+        raced = true;
+        await next(`UPDATE orders SET status = 'refunded', updated_at = '2026-02-10T14:00:00Z' WHERE id = $1`, [base.id]);
+      }
+      return next(text, values);
+    });
+    const res = await postWebhook(app, { ...base, discountPercent: 10, amountPaid: 900, updatedAt: "2026-02-10T13:00:00Z" });
+    await app.close();
+    expect(raced).toBe(true);
+    expect(res.json()).toEqual({ result: "stale" });
+    const { rows } = await ctx.db.query(`SELECT status, updated_at FROM orders WHERE id = $1`, [base.id]);
+    expect(rows[0].status).toBe("refunded");
+    expect(rows[0].updated_at.toISOString()).toBe("2026-02-10T14:00:00.000Z");
   });
 });

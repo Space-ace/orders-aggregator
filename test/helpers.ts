@@ -80,6 +80,23 @@ export function setupTestApp(): TestContext {
   return ctx;
 }
 
+type Query = (text: string, values?: unknown[]) => Promise<unknown>;
+
+/**
+ * Приложение на той же тестовой БД, но каждый запрос к ней проходит через `intercept` (`next` — настоящий
+ * запрос): для тестов гонок, сбоев базы и числа запросов. Закрыть после теста: `await app.close()`.
+ */
+export function appWithDbIntercept(ctx: TestContext, intercept: (text: string, values: unknown[] | undefined, next: Query) => Promise<unknown>) {
+  const db = new Proxy(ctx.db, {
+    get(target, prop, receiver) {
+      if (prop !== "query") return Reflect.get(target, prop, receiver);
+      const next: Query = (text, values) => target.query(text, values);
+      return (text: string, values?: unknown[]) => intercept(text, values, next);
+    },
+  });
+  return buildApp(createContainer(db, ctx.api));
+}
+
 export async function postWebhook(app: FastifyInstance, order: unknown) {
   return app.inject({ method: "POST", url: "/webhooks/order", payload: order as object });
 }
