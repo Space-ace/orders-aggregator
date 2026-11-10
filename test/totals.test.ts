@@ -13,9 +13,9 @@ describe("GET /customers/:id/daily-totals", () => {
     const res = await dailyTotals(ctx.app, "c_1", "2026-02-09", "2026-02-11");
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual([
-      { date: "2026-02-09", total: 0 },
-      { date: "2026-02-10", total: 1000 },
-      { date: "2026-02-11", total: 349 },
+      { date: "2026-02-09", total: 0, gross: 0, discount: 0, net: 0 },
+      { date: "2026-02-10", total: 1000, gross: 1000, discount: 0, net: 1000 },
+      { date: "2026-02-11", total: 349, gross: 349, discount: 0, net: 349 },
     ]);
   });
 
@@ -24,7 +24,7 @@ describe("GET /customers/:id/daily-totals", () => {
     await postWebhook(ctx.app, apiOrder({ amount: 700, status: "pending" }));
     await postWebhook(ctx.app, apiOrder({ amount: 900, status: "refunded" }));
     const res = await dailyTotals(ctx.app, "c_1", "2026-02-10", "2026-02-10");
-    expect(res.json()).toEqual([{ date: "2026-02-10", total: 500 }]);
+    expect(res.json()).toEqual([{ date: "2026-02-10", total: 500, gross: 500, discount: 0, net: 500 }]);
   });
 
   it("учитывает только заказы этого клиента", async () => {
@@ -32,7 +32,15 @@ describe("GET /customers/:id/daily-totals", () => {
     await postWebhook(ctx.app, apiOrder({ amount: 500 }));
     await postWebhook(ctx.app, apiOrder({ amount: 800, customerId: "c_2" }));
     const res = await dailyTotals(ctx.app, "c_2", "2026-02-10", "2026-02-10");
-    expect(res.json()).toEqual([{ date: "2026-02-10", total: 800 }]);
+    expect(res.json()).toEqual([{ date: "2026-02-10", total: 800, gross: 800, discount: 0, net: 800 }]);
+  });
+
+  it("считает gross, discount и net; сумма и скидка могут прийти строкой", async () => {
+    await postWebhook(ctx.app, apiOrder({ amount: 1851, discountPercent: 38, amountPaid: 1147.62 }));
+    await postWebhook(ctx.app, apiOrder({ amount: "1000.00", discountPercent: "13", amountPaid: 870 }));
+    await postWebhook(ctx.app, apiOrder({ amount: 500 })); // старый формат, без полей скидки: net = gross
+    const res = await dailyTotals(ctx.app, "c_1", "2026-02-10", "2026-02-10");
+    expect(res.json()).toEqual([{ date: "2026-02-10", total: 3351, gross: 3351, discount: 833.38, net: 2517.62 }]);
   });
 
   it("таймзона клиента берётся из API один раз", async () => {
