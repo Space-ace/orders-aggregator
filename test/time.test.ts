@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dateAtOffset, datesBetween, isCalendarDate, parseUtc, tzOffsetMinutes } from "../src/utils/time.js";
+import { dateAtOffset, dateInTimeZone, datesBetween, isCalendarDate, parseUtc, tzOffsetMinutes } from "../src/utils/time.js";
 
 describe("parseUtc", () => {
   it("строка с Z", () => {
@@ -30,6 +30,14 @@ describe("даты", () => {
   it("dateAtOffset", () => {
     expect(dateAtOffset(new Date("2026-02-10T21:30:00Z"), 180)).toBe("2026-02-11");
     expect(dateAtOffset(new Date("2026-02-10T20:30:00Z"), 180)).toBe("2026-02-10");
+  });
+
+  it("dateInTimeZone берёт смещение на сам момент, с учётом летнего времени", () => {
+    // Europe/Berlin: 29.03.2026 01:00Z +1 → +2, 25.10.2026 01:00Z +2 → +1
+    expect(dateInTimeZone(new Date("2026-03-28T22:40:00Z"), "Europe/Berlin")).toBe("2026-03-28");
+    expect(dateInTimeZone(new Date("2026-03-29T22:40:00Z"), "Europe/Berlin")).toBe("2026-03-30");
+    expect(dateInTimeZone(new Date("2026-10-24T22:30:00Z"), "Europe/Berlin")).toBe("2026-10-25");
+    expect(dateInTimeZone(new Date("2026-10-25T22:30:00Z"), "Europe/Berlin")).toBe("2026-10-25");
   });
 
   it("isCalendarDate", () => {

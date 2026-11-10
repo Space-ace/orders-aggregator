@@ -43,6 +43,21 @@ describe("GET /customers/:id/daily-totals", () => {
     expect(res.json()).toEqual([{ date: "2026-02-10", total: 3351, gross: 3351, discount: 833.38, net: 2517.62 }]);
   });
 
+  it("день заказа определяется по смещению таймзоны на момент заказа, а не на сегодня", async () => {
+    // Europe/Berlin перешёл на летнее время 29.03.2026 в 01:00Z: до этого +1, после +2.
+    // 28.03 22:40Z — это 23:40 28-го, а 29.03 22:40Z — уже 00:40 30-го.
+    // Одно смещение на оба заказа ошибётся на одном из них в любое время года
+    ctx.api.customers.set("c_b", "Europe/Berlin");
+    await postWebhook(ctx.app, apiOrder({ customerId: "c_b", amount: 100, createdAt: "2026-03-28T22:40:00Z" }));
+    await postWebhook(ctx.app, apiOrder({ customerId: "c_b", amount: 200, createdAt: "2026-03-29T22:40:00Z" }));
+    const res = await dailyTotals(ctx.app, "c_b", "2026-03-28", "2026-03-30");
+    expect(res.json()).toEqual([
+      { date: "2026-03-28", total: 100, gross: 100, discount: 0, net: 100 },
+      { date: "2026-03-29", total: 0, gross: 0, discount: 0, net: 0 },
+      { date: "2026-03-30", total: 200, gross: 200, discount: 0, net: 200 },
+    ]);
+  });
+
   it("таймзона клиента берётся из API один раз", async () => {
     await dailyTotals(ctx.app, "c_1", "2026-02-10", "2026-02-10");
     ctx.api.customers.set("c_1", "UTC");
