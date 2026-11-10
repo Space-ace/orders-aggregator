@@ -11,9 +11,12 @@ export function parseRub(raw: unknown): number {
   return value;
 }
 
-/** Рубли → копейки. Доли копейки отбрасываются: деньги клиенту не досчитываем. */
+/**
+ * Рубли → копейки. Доли копейки отбрасываются: деньги клиенту не досчитываем.
+ * Перед этим убираем погрешность float: 1147.62 * 100 = 114761.99999999999, а не 114762.
+ */
 export function toKop(rub: number): number {
-  return Math.floor(rub * 100);
+  return Math.floor(Math.round(rub * 100 * 1e6) / 1e6);
 }
 
 /** Копейки → рубли для ответа API. */
