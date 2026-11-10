@@ -73,6 +73,20 @@ describe("POST /webhooks/order", () => {
     expect(Number(rows[0].amount_paid_kop)).toBe(67000);
   });
 
+  it("старая версия не перезаписывает заказ, у которого оплаченная сумма ещё не загружена", async () => {
+    // Заказ сохранён до миграции 002 (amount_paid_kop = NULL) в версии новее пришедшей. Такую сумму
+    // дозаписывает только та же версия заказа: более старая не должна откатить статус
+    const o = apiOrder({ status: "paid", discountPercent: 10, amountPaid: 900, updatedAt: "2026-02-10T12:00:00Z" });
+    await ctx.db.query(
+      `INSERT INTO orders (id, customer_id, amount_kop, status, created_at, updated_at) VALUES ($1, $2, 100000, 'refunded', $3, '2026-02-11T12:00:00Z')`,
+      [o.id, o.customerId, o.createdAt],
+    );
+    expect((await postWebhook(ctx.app, o)).json()).toEqual({ result: "stale" });
+    const { rows } = await ctx.db.query(`SELECT status, amount_paid_kop, updated_at FROM orders WHERE id = $1`, [o.id]);
+    expect(rows[0]).toMatchObject({ status: "refunded", amount_paid_kop: null });
+    expect(rows[0].updated_at.toISOString()).toBe("2026-02-11T12:00:00.000Z");
+  });
+
   it("старая версия не перезаписывает новую, если та записана параллельной доставкой прямо перед ней", async () => {
     // Внешняя система шлёт копии одного заказа пачками одновременно. Окно гонки воспроизводим
     // детерминированно: прямо перед тем, как сервис запишет старую версию, «другая доставка»

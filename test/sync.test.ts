@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { apiOrder, appWithDbIntercept, setupTestApp } from "./helpers.js";
+import { migrate } from "../src/db.js";
+import { apiOrder, appWithDbIntercept, dailyTotals, setupTestApp } from "./helpers.js";
 
 const ctx = setupTestApp();
 
@@ -58,6 +59,31 @@ describe("POST /sync", () => {
     expect(res.json()).toMatchObject({ received: 3, applied: 1, stale: 2, invalid: 0 });
     const { rows } = await ctx.db.query(`SELECT status FROM orders WHERE id = $1`, [o.id]);
     expect(rows[0].status).toBe("paid");
+  });
+
+  it("после обновления базы синк загружает оплаченную сумму у заказов, сохранённых до миграции 002", async () => {
+    // Воспроизводим базу прежней версии сервиса: колонки amount_paid_kop нет, заказ со скидкой сохранён без неё.
+    // Затем применяем миграцию 002, как при обновлении. Версия заказа в API не изменилась, но синк должен
+    // дозаписать оплаченную сумму — иначе скидка у такого заказа не появится никогда
+    const o = apiOrder({ amount: 1000, discountPercent: 10, amountPaid: 900, createdAt: "2026-03-20T12:00:00Z", updatedAt: "2026-03-20T12:00:00Z" });
+    await ctx.db.query(`ALTER TABLE orders DROP COLUMN amount_paid_kop`);
+    await ctx.db.query(`DELETE FROM schema_migrations WHERE name = '002_amount_paid.sql'`);
+    try {
+      await ctx.db.query(
+        `INSERT INTO orders (id, customer_id, amount_kop, status, created_at, updated_at) VALUES ($1, $2, 100000, 'paid', $3, $4)`,
+        [o.id, o.customerId, o.createdAt, o.updatedAt],
+      );
+    } finally {
+      await migrate(ctx.db);
+    }
+    const before = await dailyTotals(ctx.app, "c_1", "2026-03-20", "2026-03-20");
+    expect(before.json()).toEqual([{ date: "2026-03-20", total: 1000, gross: 1000, discount: 0, net: 1000 }]);
+
+    ctx.api.pages.set(null, { items: [o], nextCursor: null });
+    const res = await ctx.app.inject({ method: "POST", url: "/sync" });
+    expect(res.json()).toMatchObject({ applied: 1, stale: 0 });
+    const after = await dailyTotals(ctx.app, "c_1", "2026-03-20", "2026-03-20");
+    expect(after.json()).toEqual([{ date: "2026-03-20", total: 1000, gross: 1000, discount: 100, net: 900 }]);
   });
 
   it("строковые суммы и даты без зоны", async () => {

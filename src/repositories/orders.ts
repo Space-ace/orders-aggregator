@@ -18,7 +18,8 @@ interface Row {
   id: string;
   customer_id: string;
   amount_kop: string;
-  amount_paid_kop: string;
+  /** NULL — заказ сохранён до миграции 002, оплаченная сумма ещё не загружена. */
+  amount_paid_kop: string | null;
   status: Order["status"];
   created_at: Date;
   updated_at: Date;
@@ -28,7 +29,8 @@ const fromRow = (r: Row): Order => ({
   id: r.id,
   customerId: r.customer_id,
   amountKop: Number(r.amount_kop),
-  amountPaidKop: Number(r.amount_paid_kop),
+  // Пока оплаченная сумма не загружена, считаем заказ оплаченным полностью — как до появления скидок
+  amountPaidKop: Number(r.amount_paid_kop ?? r.amount_kop),
   status: r.status,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
@@ -41,6 +43,8 @@ export class OrdersRepository {
    * Сохраняет версии заказов одним запросом, каждую — только если она новее сохранённой (по updated_at).
    * Для каждой строки сравнение и запись атомарны: параллельные доставки разных версий одного заказа
    * не перезаписывают новую версию старой. Итоги — по одному на каждую версию, в порядке входа.
+   * Исключение — заказы, у которых оплаченная сумма ещё не загружена (сохранены до миграции 002): их дозаполняет
+   * и та же версия, иначе синк после обновления пропустил бы их как устаревшие. Более старая версия — нет.
    */
   async saveIfNewer(orders: Order[]): Promise<SaveResult[]> {
     if (orders.length === 0) return [];
@@ -63,6 +67,7 @@ export class OrdersRepository {
          created_at      = excluded.created_at,
          updated_at      = excluded.updated_at
        WHERE orders.updated_at < excluded.updated_at
+          OR (orders.updated_at = excluded.updated_at AND orders.amount_paid_kop IS NULL)
        RETURNING id, (xmax = 0) AS inserted`,
       [
         batch.map((o) => o.id),
